@@ -25,15 +25,15 @@ test "set/get scalar" {
 
     lua.set("bool", bIn);
 
-    var int16Out = try lua.get(i16, "int16");
-    var int32Out = try lua.get(i32, "int32");
-    var int64Out = try lua.get(i64, "int64");
+    const int16Out = try lua.get(i16, "int16");
+    const int32Out = try lua.get(i32, "int32");
+    const int64Out = try lua.get(i64, "int64");
 
-    var f16Out = try lua.get(f16, "float16");
-    var f32Out = try lua.get(f32, "float32");
-    var f64Out = try lua.get(f64, "float64");
+    const f16Out = try lua.get(f16, "float16");
+    const f32Out = try lua.get(f32, "float32");
+    const f64Out = try lua.get(f64, "float64");
 
-    var bOut = try lua.get(bool, "bool");
+    const bOut = try lua.get(bool, "bool");
 
     try std.testing.expectEqual(int16In, int16Out);
     try std.testing.expectEqual(int32In, int32Out);
@@ -255,15 +255,15 @@ test "simple Zig => Lua => Zig function call" {
     var fun5 = try lua.getResource(Lua.Function(*const fn (a: i32, b: i32) i32), "luaTestFun5");
     defer lua.release(fun5);
 
-    var res4 = try fun4.call(.{"macika"});
-    var res5 = try fun5.call(.{ 42, 1 });
+    const res4 = try fun4.call(.{"macika"});
+    const res5 = try fun5.call(.{ 42, 1 });
 
     try std.testing.expect(std.mem.eql(u8, res4, "macika"));
     try std.testing.expect(res5 == 41);
 }
 
 fn testLuaInnerFun(fun: Lua.Function(*const fn (a: i32) i32)) i32 {
-    var res = fun.call(.{42}) catch unreachable;
+    const res = fun.call(.{42}) catch unreachable;
     return res;
 }
 
@@ -274,10 +274,10 @@ test "Lua function injection into Zig function" {
     lua.openLibs();
     // Binding on Zig side
     lua.run("function getInt(a) return a+1; end");
-    var luafun = try lua.getResource(Lua.Function(*const fn (a: i32) i32), "getInt");
+    const luafun = try lua.getResource(Lua.Function(*const fn (a: i32) i32), "getInt");
     defer lua.release(luafun);
 
-    var result = testLuaInnerFun(luafun);
+    const result = testLuaInnerFun(luafun);
     std.log.info("Zig Result: {}", .{result});
 
     // Binding on Lua side
@@ -376,15 +376,15 @@ test "Lua.Table allocless set/get tests" {
 
     tbl.set("bool", bIn);
 
-    var int16Out = try tbl.get(i16, "int16");
-    var int32Out = try tbl.get(i32, "int32");
-    var int64Out = try tbl.get(i64, "int64");
+    const int16Out = try tbl.get(i16, "int16");
+    const int32Out = try tbl.get(i32, "int32");
+    const int64Out = try tbl.get(i64, "int64");
 
-    var f16Out = try tbl.get(f16, "float16");
-    var f32Out = try tbl.get(f32, "float32");
-    var f64Out = try tbl.get(f64, "float64");
+    const f16Out = try tbl.get(f16, "float16");
+    const f32Out = try tbl.get(f32, "float32");
+    const f64Out = try tbl.get(f64, "float64");
 
-    var bOut = try tbl.get(bool, "bool");
+    const bOut = try tbl.get(bool, "bool");
 
     try std.testing.expectEqual(int16In, int16Out);
     try std.testing.expectEqual(int32In, int32Out);
@@ -444,7 +444,7 @@ test "Lua.Table inner table tests" {
     defer lua.release(retInnerTable);
 
     var str = try retInnerTable.get([]const u8, 1);
-    var float = try retInnerTable.get(f32, 2);
+    const float = try retInnerTable.get(f32, 2);
     var int = try retInnerTable.get(i32, 3);
 
     try std.testing.expect(std.mem.eql(u8, str, "string"));
@@ -458,7 +458,7 @@ test "Lua.Table inner table tests" {
     int = try retInner2Table.get(i32, "int32");
     var func = try retInner2Table.getResource(Lua.Function(*const fn (a: i32) i32), "fn");
     defer lua.release(func);
-    var funcRes = try func.call(.{42});
+    const funcRes = try func.call(.{42});
 
     try std.testing.expect(std.mem.eql(u8, str, "string"));
     try std.testing.expect(int == 68);
@@ -467,8 +467,8 @@ test "Lua.Table inner table tests" {
 
 var luaTableArgSum: i32 = 0;
 fn testLuaTableArg(t: Lua.Table) i32 {
-    var a = t.get(i32, "a") catch -1;
-    var b = t.get(i32, "b") catch -1;
+    const a = t.get(i32, "a") catch -1;
+    const b = t.get(i32, "b") catch -1;
     luaTableArgSum = a + b;
     return luaTableArgSum;
 }
@@ -484,7 +484,7 @@ test "Function with Lua.Table argument" {
 
     tbl.set("a", 42);
     tbl.set("b", 128);
-    var zigRes = testLuaTableArg(tbl);
+    const zigRes = testLuaTableArg(tbl);
 
     try std.testing.expect(zigRes == 42 + 128);
 
@@ -495,7 +495,7 @@ test "Function with Lua.Table argument" {
     var luaFun = try lua.getResource(Lua.Function(*const fn () i32), "test");
     defer lua.release(luaFun);
 
-    var luaRes = try luaFun.call(.{});
+    const luaRes = try luaFun.call(.{});
     try std.testing.expect(luaRes == 1 + 2);
 }
 
@@ -512,13 +512,13 @@ test "Function with Lua.Table result" {
     lua.openLibs();
     lua.injectPrettyPrint();
     // Zig side
-    var tbl = try lua.createTable();
+    const tbl = try lua.createTable();
     defer lua.release(tbl);
 
     var zigRes = testLuaTableArgOut(tbl);
 
-    var zigA = try zigRes.get(i32, 1);
-    var zigB = try zigRes.get(i32, 2);
+    const zigA = try zigRes.get(i32, 1);
+    const zigB = try zigRes.get(i32, 2);
 
     try std.testing.expect((zigA + zigB) == 42 + 128);
 
@@ -530,7 +530,7 @@ test "Function with Lua.Table result" {
     var luaFun = try lua.getResource(Lua.Function(*const fn () i32), "test");
     defer lua.release(luaFun);
 
-    var luaRes = try luaFun.call(.{});
+    const luaRes = try luaFun.call(.{});
     try std.testing.expect(luaRes == 42 + 128);
 }
 
@@ -618,44 +618,44 @@ test "Custom types I: allocless in/out member functions arguments" {
     var store = try lua.getResource(Lua.Function(*const fn (_a: i32, _b: f32, _c: []const u8, _d: bool) void), "store");
     defer lua.release(store);
 
-    var resA0 = try getA.call(.{});
+    const resA0 = try getA.call(.{});
     try std.testing.expect(resA0 == 42);
 
-    var resB0 = try getB.call(.{});
+    const resB0 = try getB.call(.{});
     try std.testing.expect(resB0 == 42.0);
 
-    var resC0 = try getC.call(.{});
+    const resC0 = try getC.call(.{});
     try std.testing.expect(std.mem.eql(u8, resC0, "life"));
 
-    var resD0 = try getD.call(.{});
+    const resD0 = try getD.call(.{});
     try std.testing.expect(resD0 == true);
 
     try store.call(.{ 1, 1.0, "death", false });
 
-    var resA1 = try getA.call(.{});
+    const resA1 = try getA.call(.{});
     try std.testing.expect(resA1 == 1);
 
-    var resB1 = try getB.call(.{});
+    const resB1 = try getB.call(.{});
     try std.testing.expect(resB1 == 1.0);
 
-    var resC1 = try getC.call(.{});
+    const resC1 = try getC.call(.{});
     try std.testing.expect(std.mem.eql(u8, resC1, "death"));
 
-    var resD1 = try getD.call(.{});
+    const resD1 = try getD.call(.{});
     try std.testing.expect(resD1 == false);
 
     try reset.call(.{});
 
-    var resA2 = try getA.call(.{});
+    const resA2 = try getA.call(.{});
     try std.testing.expect(resA2 == 0);
 
-    var resB2 = try getB.call(.{});
+    const resB2 = try getB.call(.{});
     try std.testing.expect(resB2 == 0.0);
 
-    var resC2 = try getC.call(.{});
+    const resC2 = try getC.call(.{});
     try std.testing.expect(std.mem.eql(u8, resC2, ""));
 
-    var resD2 = try getD.call(.{});
+    const resD2 = try getD.call(.{});
     try std.testing.expect(resD2 == false);
 }
 
@@ -666,7 +666,7 @@ test "Custom types II: set as global, get without ownership" {
 
     _ = try lua.newUserType(TestCustomType, "TestCustomType");
     // Creation from Zig
-    var ojjectum = try lua.createUserType(TestCustomType, .{ 42, 42.0, "life", true });
+    const ojjectum = try lua.createUserType(TestCustomType, .{ 42, 42.0, "life", true });
     defer lua.release(ojjectum);
 
     lua.set("zig", ojjectum);
@@ -687,7 +687,7 @@ test "Custom types II: set as global, get without ownership" {
     // Creation From Lua
     lua.run("o = TestCustomType.new(42, 42.0, 'life', true)");
 
-    var ptr = try lua.get(*TestCustomType, "o");
+    const ptr = try lua.get(*TestCustomType, "o");
 
     try std.testing.expect(ptr.a == 42);
     try std.testing.expect(ptr.b == 42.0);
@@ -725,8 +725,8 @@ test "Custom types III: Zig function with custom user type arguments" {
 
     lua.run(cmd);
 
-    var ptr0 = try lua.get(*TestCustomType, "o0");
-    var ptr1 = try lua.get(*TestCustomType, "o1");
+    const ptr0 = try lua.get(*TestCustomType, "o0");
+    const ptr1 = try lua.get(*TestCustomType, "o1");
 
     try std.testing.expect(ptr0.a == 0);
     try std.testing.expect(ptr0.b == 1.0);
