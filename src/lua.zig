@@ -392,7 +392,7 @@ pub const Lua = struct {
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
     fn pushSlice(comptime T: type, L: *ZLua, values: []const T) void {
-        L.createTable(values.len, 0);
+        L.createTable(@intCast(values.len), 0);
 
         for (values, 0..) |value, i| {
             push(L, i + 1);
@@ -410,9 +410,11 @@ pub const Lua = struct {
             .int, .comptime_int => L.pushInteger(@intCast(value)),
             .float, .comptime_float => L.pushNumber(value),
             .array => |info| {
-                _ = info;
-                //L.pushAny(value[0..]) catch {};
+                //_ = info;
+                //L.pushAny(value) catch {};
                 //pushSlice(info.child, L, );
+
+                pushSlice(info.child, L, &value);
             },
             .pointer => |PointerInfo| switch (PointerInfo.size) {
                 .Slice => {

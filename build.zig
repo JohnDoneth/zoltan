@@ -38,7 +38,6 @@ pub fn build(b: *std.Build) void {
 
     const exe_tests = b.addTest(.{
         .root_source_file = b.path("src/tests.zig"),
-        .test_runner = b.path("src/test_runner.zig"),
         .target = target,
         .optimize = .Debug,
         .error_tracing = true,
