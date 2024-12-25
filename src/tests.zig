@@ -134,7 +134,7 @@ test "simple Zig => Lua function call" {
         \\function test_4(a,b) return a+b; end
     ;
 
-    lua.run(lua_command);
+    try lua.run(lua_command);
 
     var fun1 = try lua.getResource(Lua.Function(*const fn () void), "test_1");
     defer lua.release(fun1);
@@ -199,16 +199,16 @@ test "simple Lua => Zig function call" {
     lua.set("testFun2", testFun2);
     lua.set("testFun3", testFun3);
 
-    lua.run("testFun0()");
+    try lua.run("testFun0()");
     try std.testing.expect(testResult0 == true);
 
-    lua.run("testFun1(42,10)");
+    try lua.run("testFun1(42,10)");
     try std.testing.expect(testResult1 == 32);
 
-    lua.run("testFun2('0123456789')");
+    try lua.run("testFun2('0123456789')");
     try std.testing.expect(testResult2 == 45);
 
-    lua.run("testFun3('0123456789', -10)");
+    try lua.run("testFun3('0123456789', -10)");
     try std.testing.expect(testResult3 == 55);
 
     testResult0 = false;
@@ -216,16 +216,16 @@ test "simple Lua => Zig function call" {
     testResult2 = 0;
     testResult3 = 0;
 
-    lua.run("testFun3('0123456789', -10)");
+    try lua.run("testFun3('0123456789', -10)");
     try std.testing.expect(testResult3 == 55);
 
-    lua.run("testFun2('0123456789')");
+    try lua.run("testFun2('0123456789')");
     try std.testing.expect(testResult2 == 45);
 
-    lua.run("testFun1(42,10)");
+    try lua.run("testFun1(42,10)");
     try std.testing.expect(testResult1 == 32);
 
-    lua.run("testFun0()");
+    try lua.run("testFun0()");
     try std.testing.expect(testResult0 == true);
 }
 
@@ -246,8 +246,8 @@ test "simple Zig => Lua => Zig function call" {
     lua.set("testFun4", testFun4);
     lua.set("testFun5", testFun5);
 
-    lua.run("function luaTestFun4(a) return testFun4(a); end");
-    lua.run("function luaTestFun5(a,b) return testFun5(a,b); end");
+    try lua.run("function luaTestFun4(a) return testFun4(a); end");
+    try lua.run("function luaTestFun5(a,b) return testFun5(a,b); end");
 
     var fun4 = try lua.getResource(Lua.Function(*const fn (a: []const u8) []const u8), "luaTestFun4");
     defer lua.release(fun4);
@@ -273,7 +273,7 @@ test "Lua function injection into Zig function" {
 
     lua.openLibs();
     // Binding on Zig side
-    lua.run("function getInt(a) return a+1; end");
+    try lua.run("function getInt(a) return a+1; end");
     const luafun = try lua.getResource(Lua.Function(*const fn (a: i32) i32), "getInt");
     defer lua.release(luafun);
 
@@ -288,7 +288,7 @@ test "Lua function injection into Zig function" {
         \\zigFunction(getInt);
     ;
 
-    lua.run(lua_command);
+    try lua.run(lua_command);
 }
 
 fn zigInnerFun(a: i32) i32 {
@@ -309,7 +309,7 @@ test "Zig function injection into Lua function" {
         \\test(zigFunction);
     ;
 
-    lua.run(lua_command);
+    try lua.run(lua_command);
 }
 
 fn testSliceInput(a: []i32) i32 {
@@ -333,7 +333,7 @@ test "Slice input to Zig function" {
         \\res = sumFunction({1,2,3});
     ;
 
-    lua.run(lua_command);
+    try lua.run(lua_command);
 }
 
 test "Lua.Table allocless set/get tests" {
@@ -490,7 +490,7 @@ test "Function with Lua.Table argument" {
 
     // Lua side
     lua.set("sumFn", testLuaTableArg);
-    lua.run("function test() return sumFn({a=1, b=2}); end");
+    try lua.run("function test() return sumFn({a=1, b=2}); end");
 
     var luaFun = try lua.getResource(Lua.Function(*const fn () i32), "test");
     defer lua.release(luaFun);
@@ -524,8 +524,8 @@ test "Function with Lua.Table result" {
 
     // Lua side
     lua.set("tblFn", testLuaTableArgOut);
-    //lua.run("function test() tbl = tblFn({}); return tbl[1] + tbl[2]; end");
-    lua.run("function test() tbl = tblFn({}); return tbl[1] + tbl[2]; end");
+    //try lua.run("function test() tbl = tblFn({}); return tbl[1] + tbl[2]; end");
+    try lua.run("function test() tbl = tblFn({}); return tbl[1] + tbl[2]; end");
 
     var luaFun = try lua.getResource(Lua.Function(*const fn () i32), "test");
     defer lua.release(luaFun);
@@ -598,7 +598,7 @@ test "Custom types I: allocless in/out member functions arguments" {
         \\function reset() o:reset() end
         \\function store(a,b,c,d) o:store(a,b,c,d) end
     ;
-    lua.run(cmd);
+    try lua.run(cmd);
 
     var getA = try lua.getResource(Lua.Function(*const fn () i32), "getA");
     defer lua.release(getA);
@@ -685,7 +685,7 @@ test "Custom types II: set as global, get without ownership" {
     try std.testing.expect(ptrZig.d == false);
 
     // Creation From Lua
-    lua.run("o = TestCustomType.new(42, 42.0, 'life', true)");
+    try lua.run("o = TestCustomType.new(42, 42.0, 'life', true)");
 
     const ptr = try lua.get(*TestCustomType, "o");
 
@@ -694,7 +694,7 @@ test "Custom types II: set as global, get without ownership" {
     try std.testing.expect(std.mem.eql(u8, ptr.c, "life"));
     try std.testing.expect(ptr.d == true);
 
-    lua.run("o:reset()");
+    try lua.run("o:reset()");
 
     try std.testing.expect(ptr.a == 0);
     try std.testing.expect(ptr.b == 0.0);
@@ -723,7 +723,7 @@ test "Custom types III: Zig function with custom user type arguments" {
         \\swap(o0, o1)
     ;
 
-    lua.run(cmd);
+    try lua.run(cmd);
 
     const ptr0 = try lua.get(*TestCustomType, "o0");
     const ptr1 = try lua.get(*TestCustomType, "o1");

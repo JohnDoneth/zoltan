@@ -38,13 +38,19 @@ pub fn build(b: *std.Build) void {
 
     const exe_tests = b.addTest(.{
         .root_source_file = b.path("src/tests.zig"),
+        .test_runner = b.path("src/test_runner.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = .Debug,
+        .error_tracing = true,
+        .unwind_tables = true,
+        .strip = false,
     });
+    const run_test = b.addRunArtifact(exe_tests);
+
     // Lua
 
     exe_tests.root_module.addImport("ziglua", ziglua.module("ziglua"));
 
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&exe_tests.step);
+    test_step.dependOn(&run_test.step);
 }
