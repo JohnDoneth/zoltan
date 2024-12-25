@@ -7,10 +7,13 @@ const ZLua = ziglua.Lua;
 pub const Lua = struct {
     const LuaUserData = struct {
         allocator: std.mem.Allocator,
-        registeredTypes: std.StringArrayHashMap([]const u8) = undefined,
+        registeredTypes: std.StringArrayHashMap([:0]const u8) = undefined,
 
         fn init(_allocator: std.mem.Allocator) LuaUserData {
-            return LuaUserData{ .allocator = _allocator, .registeredTypes = std.StringArrayHashMap([]const u8).init(_allocator) };
+            return LuaUserData{
+                .allocator = _allocator,
+                .registeredTypes = std.StringArrayHashMap([:0]const u8).init(_allocator),
+            };
         }
 
         fn destroy(self: *LuaUserData) void {
@@ -96,6 +99,11 @@ pub const Lua = struct {
         return try popResource(Lua.Table, self.L);
     }
 
+    pub fn createMetaTable(self: *Lua, name: [:0]const u8) !Lua.Table {
+        try self.L.newMetatable(name);
+        return try popResource(Lua.Table, self.L);
+    }
+
     pub fn createUserType(self: *Lua, comptime T: type, params: anytype) !Ref(T) {
         _ = self;
         _ = params;
@@ -136,20 +144,33 @@ pub const Lua = struct {
     }
 
     // Zig 0.10.0+ returns a fully qualified struct name, so require an explicit UserType name
-    pub fn newUserType(self: *Lua, comptime T: type, comptime name: []const u8) !void {
-        _ = self;
-        _ = T;
-        _ = name;
+    pub fn newUserType(self: *Lua, comptime T: type, comptime metaTableName: [:0]const u8) !void {
+        // _ = self;
+        // _ = T;
+        // _ = name;
 
-        // comptime var hasInit: bool = false;
-        // comptime var hasDestroy: bool = false;
-        // comptime var metaTblName: [1024]u8 = undefined;
-        // _ = comptime try std.fmt.bufPrint(metaTblName[0..], "{s}", .{name});
-        // // Init Lua states
+        comptime var hasInit: bool = false;
+        comptime var hasDestroy: bool = false;
+        //var metaTblName: [1024:0]u8 = undefined;
+        //_ = comptime try std.fmt.bufPrintZ(&metaTblName, "{s}", .{name});
+        // Init Lua states
+
+        const allocFuns = comptime struct {
+            fn new(L: *ZLua) i32 {
+                _ = L;
+                return 0;
+            }
+
+            fn gc(L: *ZLua) i32 {
+                _ = L;
+                return 0;
+            }
+        };
+
         // comptime var allocFuns = struct {
         //     fn new(L: ?*ZLua) callconv(.C) c_int {
         //         // (1) get arguments
-        //         var caller = ZigCallHelper(@TypeOf(T.init)).LowLevelHelpers.init();
+        //         var caller = FunctionWrapper(@TypeOf(T.init)).LowLevelHelpers.init();
         //         caller.prepareArgs(L) catch unreachable;
 
         //         // (2) create Lua object
@@ -175,36 +196,49 @@ pub const Lua = struct {
         //     }
         // };
         // // Create metatable
+
+        const metatable = try self.createMetaTable(metaTableName);
+
+        // self.L.newMetatable(metaTblName);
+
+        // self.L.pushValue(-1);
+        // self.L.setField(-1, "__index");
+
+        metatable.set("__index", metatable);
+        metatable.set("__gc", allocFuns.gc);
+
         // _ = lualib.luaL_newmetatable(self.L, @ptrCast([*c]const u8, metaTblName[0..]));
         // // Metatable.__index = metatable
         // lualib.lua_pushvalue(self.L, -1);
         // lualib.lua_setfield(self.L, -2, "__index");
 
-        // //lua.luaL_setfuncs(self.L, &methods, 0); =>
+        // self.L.pushFunction(allocFuns.gc);
+        // self.L.setField(-2, "__gc");
+
         // lualib.lua_pushcclosure(self.L, allocFuns.gc, 0);
         // lualib.lua_setfield(self.L, -2, "__gc");
 
         // // Collect information
-        // switch (@typeInfo(T)) {
-        //     .Struct => |StructInfo| {
-        //         inline for (StructInfo.decls) |decl| {
-        //             if (comptime std.mem.eql(u8, decl.name, "init") == true) {
-        //                 hasInit = true;
-        //             } else if (comptime std.mem.eql(u8, decl.name, "destroy") == true) {
-        //                 hasDestroy = true;
-        //             } else if (decl.is_pub) {
-        //                 comptime var field = @field(T, decl.name);
-        //                 const Caller = ZigCallHelper(@TypeOf(field));
-        //                 Caller.pushFunctor(self.L, field) catch unreachable;
-        //                 lualib.lua_setfield(self.L, -2, @ptrCast([*c]const u8, decl.name));
-        //             }
-        //         }
-        //     },
-        //     else => @compileError("Only Struct supported."),
-        // }
-        // if ((hasInit == false) or (hasDestroy == false)) {
-        //     @compileError("Struct has to have init and destroy methods.");
-        // }
+        switch (@typeInfo(T)) {
+            .@"struct" => |StructInfo| {
+                inline for (StructInfo.decls) |decl| {
+                    if (comptime std.mem.eql(u8, decl.name, "init") == true) {
+                        hasInit = true;
+                    } else if (comptime std.mem.eql(u8, decl.name, "destroy") == true) {
+                        hasDestroy = true;
+                    } else {
+                        const field = comptime @field(T, decl.name);
+
+                        try FunctionWrapper(@TypeOf(field), field, self.L);
+                        self.L.setField(-2, decl.name);
+                    }
+                }
+            },
+            else => @compileError("Only Struct supported."),
+        }
+        if ((hasInit == false) or (hasDestroy == false)) {
+            @compileError("Struct has to have init and destroy methods.");
+        }
         // // Only the 'new' function
         // // <==_ = lua.luaL_newlib(lua.L, &arraylib_f); ==>
         // lualib.luaL_checkversion(self.L);
@@ -213,11 +247,20 @@ pub const Lua = struct {
         // lualib.lua_pushcclosure(self.L, allocFuns.new, 0);
         // lualib.lua_setfield(self.L, -2, "new");
 
+        const globalTable = try self.createTable();
+
+        try FunctionWrapper(@TypeOf(T.init), T.init, self.L);
+        self.L.setField(-2, "new");
+
+        //globalTable.set("new", allocFuns.new);
+
+        self.set(metaTableName, globalTable);
+
         // // Set as global ('require' requires luaopen_{libraname} named static C functionsa and we don't want to provide one)
         // _ = lualib.lua_setglobal(self.L, @ptrCast([*c]const u8, metaTblName[0..]));
 
         // // Store in the registry
-        // try getUserData(self.L).registeredTypes.put(@typeName(T), metaTblName[0..]);
+        try self.getUserData().registeredTypes.put(@typeName(T), metaTableName);
     }
 
     pub fn Function(comptime T: type) type {
@@ -796,22 +839,20 @@ pub const Lua = struct {
     //     };
     // }
 
-    fn getUserData(L: ?*ZLua) *Lua.LuaUserData {
-        _ = L;
-        //var ud: *anyopaque = undefined;
+    fn getUserData(L: *Lua) *Lua.LuaUserData {
+        // var ud: *anyopaque = undefined;
 
-        //L.?.getAlloc( ud)
-        //L.?.toUserdata(comptime T: type, index: i32)
+        // L.?.getAlloc(Lua.LuaUserData, "test");
 
-        // return L.?.getAlloc(Lua.LuaUserData, "test");
+        // _ = lualib.lua_getallocf(L, @ptrCast([*c]?*anyopaque, &ud));
+        // const userData = @ptrCast(*Lua.LuaUserData, @alignCast(@alignOf(Lua.LuaUserData), ud));
+        // return userData;
 
-        //_ = lualib.lua_getallocf(L, @ptrCast([*c]?*anyopaque, &ud));
-        //const userData = @ptrCast(*Lua.LuaUserData, @alignCast(@alignOf(Lua.LuaUserData), ud));
-        //return userData;
+        return L.ud;
     }
 
-    fn getAllocator(L: ?*ZLua) std.mem.Allocator {
-        return getUserData(L).allocator;
+    fn getAllocator(L: *ZLua) std.mem.Allocator {
+        return L.allocator();
     }
 
     //     // Credit: https://github.com/daurnimator/zig-autolua
@@ -830,10 +871,60 @@ pub const Lua = struct {
     //     }
 };
 
+const TestCustomType = struct {
+    a: i32,
+    b: f32,
+    c: []const u8,
+    d: bool,
+
+    pub fn init(_a: i32, _b: f32, _c: []const u8, _d: bool) TestCustomType {
+        return TestCustomType{
+            .a = _a,
+            .b = _b,
+            .c = _c,
+            .d = _d,
+        };
+    }
+
+    pub fn destroy(_: *TestCustomType) void {}
+
+    pub fn getA(self: *TestCustomType) i32 {
+        return self.a;
+    }
+
+    pub fn getB(self: *TestCustomType) f32 {
+        return self.b;
+    }
+
+    pub fn getC(self: *TestCustomType) []const u8 {
+        return self.c;
+    }
+
+    pub fn getD(self: *TestCustomType) bool {
+        return self.d;
+    }
+
+    pub fn reset(self: *TestCustomType) void {
+        self.a = 0;
+        self.b = 0;
+        self.c = "";
+        self.d = false;
+    }
+
+    pub fn store(self: *TestCustomType, _a: i32, _b: f32, _c: []const u8, _d: bool) void {
+        self.a = _a;
+        self.b = _b;
+        self.c = _c;
+        self.d = _d;
+    }
+};
+
 pub fn main() anyerror!void {
     var lua = try Lua.init(std.heap.c_allocator);
     defer lua.destroy();
     lua.openLibs();
+
+    try lua.newUserType(TestCustomType, "TestCustomType");
 
     const tbl = try lua.createTable();
     defer lua.release(tbl);
@@ -851,7 +942,11 @@ pub fn main() anyerror!void {
 
     lua.set("func", func);
 
-    lua.run("print(func())") catch {
+    // lua.run("print(func())") catch {
+    //     std.debug.print("{s}\n", .{lua.L.toString(-1) catch "Unknown"});
+    // };
+
+    lua.run("print(TestCustomType.new())") catch {
         std.debug.print("{s}\n", .{lua.L.toString(-1) catch "Unknown"});
     };
 }
