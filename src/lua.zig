@@ -132,9 +132,7 @@ pub const Lua = struct {
     }
 
     pub fn release(self: *Lua, v: anytype) void {
-        _ = self;
-        _ = v;
-        //_ = allocateDeallocateHelper(@TypeOf(v), true, self.ud.allocator, v);
+        _ = allocateDeallocateHelper(@TypeOf(v), true, self.ud.allocator, v);
     }
 
     // Zig 0.10.0+ returns a fully qualified struct name, so require an explicit UserType name
@@ -475,8 +473,8 @@ pub const Lua = struct {
                 },
             },
             .@"fn" => {
-                const Helper = ZigCallHelper(@TypeOf(value));
-                Helper.pushFunctor(L, value) catch unreachable;
+                // Possibly combine these first two args.
+                try FunctionWrapper(@TypeOf(value), value, L);
             },
             .@"struct" => |_| {
                 const funIdx = comptime indexOfNullable(T, "Function");
@@ -538,10 +536,10 @@ pub const Lua = struct {
                 if (StructInfo.is_tuple) {
                     @compileError("Tuples are not supported.");
                 }
-                // comptime var funIdx = std.mem.indexOf(u8, @typeName(T), "Function") orelse -1;
-                // comptime var tblIdx = std.mem.indexOf(u8, @typeName(T), "Table") orelse -1;
-                if (T != Lua.Table or T != Lua.Function) {
-                    @compileError("allocGet only supports Lua.Function and Lua.Table. The type '" ++ @typeName(T) ++ "' is not supported.");
+                const funIdx = comptime indexOfNullable(T, "Function");
+                const tblIdx = comptime indexOfNullable(T, "Table");
+                if (funIdx >= 0 or tblIdx >= 0) {
+                    @compileError("Only allocGet supports Lua.Function and Lua.Table. The type '" ++ @typeName(T) ++ "' is not supported.");
                 }
 
                 var result: T = .{ 0, 0 };
@@ -583,7 +581,7 @@ pub const Lua = struct {
                         return error.bad_type;
                     }
                 },
-                else => @compileError("Only Slice is supported."),
+                else => @compileError("Only Slice is supported. Type: " ++ @typeName(T)),
             },
             std.builtin.Type.@"struct" => |_| {
                 const funIdx = comptime indexOfNullable(T, "Function");
@@ -617,10 +615,10 @@ pub const Lua = struct {
         }
     }
 
-    //     // It is a helper function, with two responsibilities:
-    //     // 1. When it's called with only a type (allocator and value are both null) in compile time it returns that
-    //     //    the given type is allocated or not
-    //     // 2. When it's called with full arguments it cleans up.
+    // It is a helper function, with two responsibilities:
+    // 1. When it's called with only a type (allocator and value are both null) in compile time it returns that
+    //    the given type is allocated or not
+    // 2. When it's called with full arguments it cleans up.
     fn allocateDeallocateHelper(comptime T: type, comptime deallocate: bool, allocator: ?std.mem.Allocator, value: ?T) bool {
         switch (@typeInfo(T)) {
             .pointer => |PointerInfo| switch (PointerInfo.size) {
@@ -637,9 +635,10 @@ pub const Lua = struct {
                 else => return false,
             },
             .@"struct" => |_| {
-                const funIdx = std.mem.indexOf(u8, @typeName(T), "Function") orelse -1;
-                const tblIdx = std.mem.indexOf(u8, @typeName(T), "Table") orelse -1;
-                const refIdx = std.mem.indexOf(u8, @typeName(T), "Ref(") orelse -1;
+                const funIdx = comptime indexOfNullable(T, "Function");
+                const tblIdx = comptime indexOfNullable(T, "Table");
+                const refIdx = comptime indexOfNullable(T, "Ref");
+
                 if (funIdx >= 0 or tblIdx >= 0 or refIdx >= 0) {
                     if (deallocate) {
                         value.?.destroy();
@@ -653,96 +652,149 @@ pub const Lua = struct {
         }
     }
 
-    fn ZigCallHelper(comptime funcType: type) type {
+    fn FunctionWrapper(comptime funcType: type, func: *const funcType, L: *ZLua) !void {
         const info = @typeInfo(funcType);
         if (info != .@"fn") {
-            @compileError("ZigCallHelper expects a function type");
+            @compileError("FunctionWrapper expects a function type");
         }
 
-        @compileLog(funcType);
-
         const ReturnType = info.@"fn".return_type.?;
-        const ArgTypes = std.meta.ArgsTuple(funcType);
+        const ArgTypes = comptime std.meta.ArgsTuple(funcType);
         const resultCnt = if (ReturnType == void) 0 else 1;
 
-        return struct {
-            pub const LowLevelHelpers = struct {
-                const Self = @This();
+        const funcPtrAsInt = @as(c_longlong, @intCast(@intFromPtr(func)));
 
-                compargs: ArgTypes = undefined,
-                result: ReturnType = undefined,
+        L.pushInteger(funcPtrAsInt);
 
-                pub fn init() Self {
-                    return Self{};
+        const cfun = struct {
+            fn helper(_L: *ZLua) !i32 {
+                //std.debug.print("{s}\n", .{"before"});
+
+                var args: ArgTypes = undefined;
+
+                if (_L.getTop() <= args.len) {
+                    _L.raiseErrorStr("Not enough arguments supplied to function. Expected %d but received %d.", .{ args.len, _L.getTop() });
                 }
 
-                fn prepareArgs(self: *Self, L: ?*ZLua) !void {
-
-                    @compileLog("args");
-                    inline for (self.args) |x| {
-                        @compileLog(x);
-                    }
-
-                    // Prepare arguments
-                    if (self.args.len <= 0) return;
-                    var i: i32 = (self.args.len - 1);
-                    inline while (i > -1) : (i -= 1) {
-                        if (allocateDeallocateHelper(@TypeOf(self.args[i]), false, null, null)) {
-                            self.args[i] = popResource(@TypeOf(self.args[i]), L.?) catch unreachable;
-                        } else {
-                            self.args[i] = pop(@TypeOf(self.args[i]), L.?) catch unreachable;
-                        }
+                // Maybe allocate arguments.
+                inline for (0.., args) |i, arg| {
+                    if (comptime allocateDeallocateHelper(@TypeOf(arg), false, null, null)) {
+                        args[i] = try popResource(@TypeOf(arg), _L);
+                    } else {
+                        args[i] = try pop(@TypeOf(arg), _L);
                     }
                 }
+                // Get func pointer upvalue as int => convert to func ptr then call
+                const ptr: usize = @intCast(try _L.toInteger(ZLua.upvalueIndex(1)));
 
-                fn call(self: *Self, func: *const funcType) !void {
-                    self.result = @call(.auto, func, self.args);
+                const result = @call(.auto, @as(*const funcType, @ptrFromInt(ptr)), args);
+
+                if (resultCnt > 0) {
+                    push(_L, result);
                 }
-
-                fn pushResult(self: *Self, L: ?*ZLua) !void {
-                    if (resultCnt > 0) {
-                        push(L.?, self.result);
-                    }
+                // Deallocate any allocated arguments.
+                inline for (0.., args) |i, _| {
+                    _ = allocateDeallocateHelper(@TypeOf(args[i]), true, _L.allocator(), args[i]);
                 }
+                _ = allocateDeallocateHelper(ReturnType, true, _L.allocator(), result);
 
-                fn destroyArgs(self: *Self, L: ?*ZLua) !void {
-                    if (self.args.len <= 0) return;
-                    var i: i32 = self.args.len - 1;
-                    inline while (i > -1) : (i -= 1) {
-                        _ = allocateDeallocateHelper(@TypeOf(self.args[i]), true, L.allocator(), self.args[i]);
-                    }
-                    _ = allocateDeallocateHelper(ReturnType, true, L.allocator(), self.result);
-                }
-            };
-
-            pub fn pushFunctor(L: ?*ZLua, func: *const funcType) !void {
-                const funcPtrAsInt = @as(c_longlong, @intCast(@intFromPtr(func)));
-
-                L.?.pushInteger(funcPtrAsInt);
-
-                const cfun = struct {
-                    fn helper(_L: *ZLua) callconv(.C) c_int {
-
-                        var f: LowLevelHelpers = undefined;
-                        // Prepare arguments from stack
-                        f.prepareArgs(_L) catch unreachable;
-                        // Get func pointer upvalue as int => convert to func ptr then call
-
-                        const ptr = _L.toInteger(ZLua.upvalueIndex(1)) catch unreachable;
-
-                        f.call(@as(*const funcType, @ptrFromInt(ptr))) catch unreachable;
-                        // The end
-                        f.pushResult(_L) catch unreachable;
-                        // Release arguments
-                        f.destroyArgs(_L) catch unreachable;
-                        return resultCnt;
-                    }
-                }.helper;
-
-                L.?.pushClosure(ziglua.wrap(cfun), 1);
+                return resultCnt;
             }
-        };
+        }.helper;
+
+        L.pushClosure(ziglua.wrap(cfun), 1);
     }
+
+    // fn ZigCallHelper(comptime funcType: type) type {
+    //     const info = @typeInfo(funcType);
+    //     if (info != .@"fn") {
+    //         @compileError("ZigCallHelper expects a function type");
+    //     }
+
+    //     @compileLog(funcType);
+
+    //     const ReturnType = info.@"fn".return_type.?;
+    //     const ArgTypes = std.meta.ArgsTuple(funcType);
+    //     const resultCnt = if (ReturnType == void) 0 else 1;
+
+    //     return struct {
+    //         pub const LowLevelHelpers = struct {
+    //             const Self = @This();
+
+    //             compargs: ArgTypes = undefined,
+    //             result: ReturnType = undefined,
+
+    //             pub fn init() Self {
+    //                 return Self{};
+    //             }
+
+    //             fn prepareArgs(self: *Self, L: ?*ZLua) !void {
+
+    //                 @compileLog("args");
+    //                 inline for (self.args) |x| {
+    //                     @compileLog(x);
+    //                 }
+
+    //                 // Prepare arguments
+    //                 if (self.args.len <= 0) return;
+    //                 var i: i32 = (self.args.len - 1);
+    //                 inline while (i > -1) : (i -= 1) {
+    //                     if (allocateDeallocateHelper(@TypeOf(self.args[i]), false, null, null)) {
+    //                         self.args[i] = popResource(@TypeOf(self.args[i]), L.?) catch unreachable;
+    //                     } else {
+    //                         self.args[i] = pop(@TypeOf(self.args[i]), L.?) catch unreachable;
+    //                     }
+    //                 }
+    //             }
+
+    //             fn call(self: *Self, func: *const funcType) !void {
+    //                 self.result = @call(.auto, func, self.args);
+    //             }
+
+    //             fn pushResult(self: *Self, L: ?*ZLua) !void {
+    //                 if (resultCnt > 0) {
+    //                     push(L.?, self.result);
+    //                 }
+    //             }
+
+    //             fn destroyArgs(self: *Self, L: ?*ZLua) !void {
+    //                 if (self.args.len <= 0) return;
+    //                 var i: i32 = self.args.len - 1;
+    //                 inline while (i > -1) : (i -= 1) {
+    //                     _ = allocateDeallocateHelper(@TypeOf(self.args[i]), true, L.allocator(), self.args[i]);
+    //                 }
+    //                 _ = allocateDeallocateHelper(ReturnType, true, L.allocator(), self.result);
+    //             }
+    //         };
+
+    //         pub fn pushFunctor(L: ?*ZLua, func: *const funcType) !void {
+    //             const funcPtrAsInt = @as(c_longlong, @intCast(@intFromPtr(func)));
+
+    //             L.?.pushInteger(funcPtrAsInt);
+
+    //             const cfun = struct {
+    //                 fn helper(_L: *ZLua) callconv(.C) c_int {
+
+    //                     var f: LowLevelHelpers = undefined;
+    //                     // Prepare arguments from stack
+    //                     f.prepareArgs(_L) catch unreachable;
+    //                     // Get func pointer upvalue as int => convert to func ptr then call
+
+    //                     const ptr = _L.toInteger(ZLua.upvalueIndex(1)) catch unreachable;
+
+    //                     f.call(@as(*const funcType, @ptrFromInt(ptr))) catch unreachable;
+    //                     // The end
+    //                     f.pushResult(_L) catch unreachable;
+    //                     // Release arguments
+    //                     f.destroyArgs(_L) catch unreachable;
+    //                     return resultCnt;
+    //                 }
+    //             }.helper;
+
+    //             L.?.pushClosure(ziglua.wrap(cfun), 1);
+    //         }
+    //     };
+    // }
 
     fn getUserData(L: ?*ZLua) *Lua.LuaUserData {
         _ = L;
@@ -790,4 +842,16 @@ pub fn main() anyerror!void {
     lua.set("zig", tbl);
 
     try lua.run("print(zig.welcome)");
+
+    const func = struct {
+        fn func(x: i32) i32 {
+            return x + 1;
+        }
+    }.func;
+
+    lua.set("func", func);
+
+    lua.run("print(func())") catch {
+        std.debug.print("{s}\n", .{lua.L.toString(-1) catch "Unknown"});
+    };
 }
