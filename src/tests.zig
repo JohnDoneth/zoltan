@@ -4,7 +4,7 @@ const assert = std.debug.assert;
 
 test "set/get scalar" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
     const int16In: i16 = 1;
     const int32In: i32 = 2;
     const int64In: i64 = 3;
@@ -48,7 +48,7 @@ test "set/get scalar" {
 
 test "set/get string" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     var strMany: [*]const u8 = "macilaci";
     var strSlice: []const u8 = "macilaic";
@@ -93,7 +93,7 @@ test "set/get string" {
 
 test "set/get slice of primitive type (scalar, unmutable string)" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     const boolSlice = [_]bool{ true, false, true };
     const intSlice = [_]i32{ 4, 5, 3, 4, 0 };
@@ -123,7 +123,7 @@ test "set/get slice of primitive type (scalar, unmutable string)" {
 
 test "simple Zig => Lua function call" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
 
@@ -190,7 +190,7 @@ fn testFun3(a: []const u8, b: i32) void {
 
 test "simple Lua => Zig function call" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
 
@@ -239,7 +239,7 @@ fn testFun5(a: i32, b: i32) i32 {
 
 test "simple Zig => Lua => Zig function call" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
 
@@ -269,7 +269,7 @@ fn testLuaInnerFun(fun: Lua.Function(*const fn (a: i32) i32)) i32 {
 
 test "Lua function injection into Zig function" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
     // Binding on Zig side
@@ -297,7 +297,7 @@ fn zigInnerFun(a: i32) i32 {
 
 test "Zig function injection into Lua function" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
 
@@ -322,7 +322,7 @@ fn testSliceInput(a: []i32) i32 {
 
 test "Slice input to Zig function" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
 
@@ -338,7 +338,7 @@ test "Slice input to Zig function" {
 
 test "Lua.Table allocless set/get tests" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
 
@@ -410,7 +410,7 @@ fn tblFun(a: i32) i32 {
 
 test "Lua.Table inner table tests" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
 
@@ -475,7 +475,7 @@ fn testLuaTableArg(t: Lua.Table) i32 {
 
 test "Function with Lua.Table argument" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
     // Zig side
@@ -507,7 +507,7 @@ fn testLuaTableArgOut(t: Lua.Table) Lua.Table {
 
 test "Function with Lua.Table result" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
 
     lua.openLibs();
     lua.injectPrettyPrint();
@@ -584,7 +584,7 @@ const TestCustomType = struct {
 
 test "Custom types I: allocless in/out member functions arguments" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
     lua.openLibs();
 
     try lua.newUserType(TestCustomType, "TestCustomType");
@@ -661,7 +661,7 @@ test "Custom types I: allocless in/out member functions arguments" {
 
 test "Custom types II: set as global, get without ownership" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
     lua.openLibs();
 
     _ = try lua.newUserType(TestCustomType, "TestCustomType");
@@ -711,7 +711,7 @@ fn testCustomTypeSwap(ptr0: *TestCustomType, ptr1: *TestCustomType) void {
 
 test "Custom types III: Zig function with custom user type arguments" {
     var lua = try Lua.init(std.testing.allocator);
-    defer lua.destroy();
+    defer lua.deinit();
     lua.openLibs();
 
     _ = try lua.newUserType(TestCustomType, "TestCustomType");

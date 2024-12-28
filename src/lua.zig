@@ -21,30 +21,43 @@ pub const Lua = struct {
         }
     };
 
-    L: *ZLua,
-    ud: *LuaUserData,
+    pub inline fn inner(self: *Lua) *ZLua {
+        return @ptrCast(self);
+    }
 
-    pub fn init(allocator: std.mem.Allocator) !Lua {
-        const _ud = try allocator.create(LuaUserData);
-        _ud.* = LuaUserData.init(allocator);
+    pub fn init(allocator: std.mem.Allocator) !*Lua {
+        const ud = try allocator.create(LuaUserData);
+        ud.* = LuaUserData.init(allocator);
 
-        const lua = try ZLua.init(allocator);
+        const lua: *Lua = @ptrCast(try ZLua.init(allocator));
 
-        return .{
-            .L = lua,
-            .ud = _ud,
+        lua.setRegistry("LuaUserData", ud);
+
+        return lua;
+    }
+
+    /// Reference to the book keeping struct used by the library.
+    fn library_user_data(self: *Lua) *LuaUserData {
+        return self.getRegistry(*LuaUserData, "LuaUserData") catch {
+            @panic("Library user data was not set!");
         };
     }
 
-    pub fn destroy(self: *Lua) void {
-        self.L.deinit();
+    pub fn deinit(self: *Lua) void {
+        _ = self;
 
-        var allocator = self.ud.allocator;
-        allocator.destroy(self.ud);
+        // const userdata = self.library_user_data();
+
+        // _ = userdata;
+
+        // var allocator = userdata.allocator;
+        // allocator.destroy(userdata);
+
+        // self.inner().deinit();
     }
 
     pub fn openLibs(self: *Lua) void {
-        self.L.openLibs();
+        self.inner().openLibs();
     }
 
     pub fn injectPrettyPrint(self: *Lua) void {
@@ -70,38 +83,57 @@ pub const Lua = struct {
     }
 
     pub fn run(self: *Lua, script: [:0]const u8) !void {
-        try self.L.doString(script);
+        try self.inner().doString(script);
     }
 
     pub fn set(self: *Lua, name: [:0]const u8, value: anytype) void {
-        Lua.push(self.L, value);
-        self.L.setGlobal(name);
+        self.push(value);
+        self.inner().setGlobal(name);
     }
 
     pub fn get(self: *Lua, comptime T: type, name: [:0]const u8) !T {
-        if (try self.L.getGlobal(name) != ziglua.LuaType.nil) {
-            return try pop(T, self.L);
+        if (try self.inner().getGlobal(name) != ziglua.LuaType.nil) {
+            return try self.pop(T);
         } else {
             return error.invalid;
         }
     }
 
     pub fn getResource(self: *Lua, comptime T: type, name: [:0]const u8) !T {
-        if (try self.L.getGlobal(name) != ziglua.LuaType.nil) {
-            return try popResource(T, self.L);
+        if (try self.inner().getGlobal(name) != ziglua.LuaType.nil) {
+            return try self.popResource(T);
         } else {
             return error.invalid;
         }
     }
 
-    pub fn createTable(self: *Lua) !Lua.Table {
-        self.L.newTable();
-        return try popResource(Lua.Table, self.L);
+    pub fn setRegistry(self: *Lua, key: anytype, value: anytype) void {
+        self.push(key);
+        self.push(value);
+        self.inner().rawSetTable(ziglua.registry_index);
     }
 
+    pub fn getRegistry(self: *Lua, comptime T: type, key: anytype) !*T {
+        self.push(key);
+        _ = self.inner().rawGetTable(ziglua.registry_index);
+        return self.inner().toUserdata(T, -1);
+    }
+
+    /// Creates a new table in the Lua registry (not on the stack).
+    pub fn createTable(self: *Lua) !Lua.Table {
+        self.inner().newTable();
+        return try self.popResource(Lua.Table);
+    }
+
+    /// Creates a new meta table in the Lua registry (not on the stack).
     pub fn createMetaTable(self: *Lua, name: [:0]const u8) !Lua.Table {
-        try self.L.newMetatable(name);
-        return try popResource(Lua.Table, self.L);
+        try self.inner().newMetatable(name);
+        return try self.popResource(Lua.Table);
+    }
+
+    pub fn upvalueIndex(self: *Lua, comptime T: type, index: i32) !T {
+        self.inner().upvalueIndex(index);
+        return try self.pop(T);
     }
 
     pub fn createUserType(self: *Lua, comptime T: type, params: anytype) !Ref(T) {
@@ -140,7 +172,7 @@ pub const Lua = struct {
     }
 
     pub fn release(self: *Lua, v: anytype) void {
-        _ = allocateDeallocateHelper(@TypeOf(v), true, self.ud.allocator, v);
+        _ = allocateDeallocateHelper(@TypeOf(v), true, self.library_user_data().allocator, v);
     }
 
     // Zig 0.10.0+ returns a fully qualified struct name, so require an explicit UserType name
@@ -156,13 +188,27 @@ pub const Lua = struct {
         // Init Lua states
 
         const allocFuns = comptime struct {
-            fn new(L: *ZLua) i32 {
-                _ = L;
-                return 0;
+            fn new(zlua: *ZLua) !i32 {
+                //
+                const lua: *Lua = @ptrCast(zlua);
+
+                var userdata = lua.inner().newUserdata(T);
+                _ = lua.inner().getMetatableRegistry(metaTableName);
+                lua.inner().setMetatable(-2);
+
+                //comptime @compileLog(@TypeOf(T.init));
+
+                try lua.pushZigFunction(@TypeOf(T.init), T.init);
+                lua.inner().call(.{});
+                userdata = lua.inner().toUserdata(T, -1) catch unreachable;
+
+                return 1;
             }
 
-            fn gc(L: *ZLua) i32 {
-                _ = L;
+            fn gc(zlua: *ZLua) !i32 {
+                const lua: *Lua = @ptrCast(zlua);
+
+                _ = lua;
                 return 0;
             }
         };
@@ -205,7 +251,7 @@ pub const Lua = struct {
         // self.L.setField(-1, "__index");
 
         metatable.set("__index", metatable);
-        metatable.set("__gc", allocFuns.gc);
+        //metatable.set("__gc", allocFuns.gc);
 
         // _ = lualib.luaL_newmetatable(self.L, @ptrCast([*c]const u8, metaTblName[0..]));
         // // Metatable.__index = metatable
@@ -229,8 +275,8 @@ pub const Lua = struct {
                     } else {
                         const field = comptime @field(T, decl.name);
 
-                        try FunctionWrapper(@TypeOf(field), field, self.L);
-                        self.L.setField(-2, decl.name);
+                        try self.pushZigFunction(@TypeOf(field), field);
+                        self.inner().setField(-2, decl.name);
                     }
                 }
             },
@@ -249,10 +295,9 @@ pub const Lua = struct {
 
         const globalTable = try self.createTable();
 
-        try FunctionWrapper(@TypeOf(T.init), T.init, self.L);
-        self.L.setField(-2, "new");
+        //self.L.setField(-2, "new");
 
-        //globalTable.set("new", allocFuns.new);
+        globalTable.set("new", ziglua.wrap(allocFuns.new));
 
         self.set(metaTableName, globalTable);
 
@@ -260,6 +305,7 @@ pub const Lua = struct {
         // _ = lualib.lua_setglobal(self.L, @ptrCast([*c]const u8, metaTblName[0..]));
 
         // // Store in the registry
+
         try self.getUserData().registeredTypes.put(@typeName(T), metaTableName);
     }
 
@@ -274,30 +320,30 @@ pub const Lua = struct {
                 }
             }
 
-            @compileError("Unsupported type");
+            @compileError("Unsupported type. " ++ @typeName(FuncType));
         };
         return struct {
             const Self = @This();
 
-            L: *ZLua,
+            lua: *Lua,
             ref: c_int = undefined,
             func: FuncType = undefined,
 
             // This 'Init' assumes, that the top element of the stack is a Lua function
-            pub fn init(_L: *ZLua) Self {
-                const _ref = _L.ref(ziglua.registry_index) catch {
+            pub fn init(lua: *Lua) Self {
+                const _ref = lua.inner().ref(ziglua.registry_index) catch {
                     @panic("The top element of the stack should be a Lua function");
                 };
 
                 const res = Self{
-                    .L = _L,
+                    .lua = lua,
                     .ref = _ref,
                 };
                 return res;
             }
 
             pub fn destroy(self: *const Self) void {
-                Lua.unref(self.ref);
+                self.lua.inner().unref(ziglua.registry_index, self.ref);
             }
 
             pub fn call(self: *const Self, args: anytype) !RetType.? {
@@ -306,13 +352,13 @@ pub const Lua = struct {
                     ("Expected tuple or struct argument, found " ++ @typeName(ArgsType));
                 }
                 // Getting function reference
-                _ = self.L.rawGetIndex(ziglua.registry_index, self.ref);
+                _ = self.lua.inner().rawGetIndex(ziglua.registry_index, self.ref);
 
                 // Preparing arguments
                 comptime var i = 0;
                 const fields_info = std.meta.fields(ArgsType);
                 inline while (i < fields_info.len) : (i += 1) {
-                    Lua.push(self.L, args[i]);
+                    self.lua.push(args[i]);
                 }
                 // Calculating retval count
                 const retValCount = switch (@typeInfo(RetType.?)) {
@@ -322,7 +368,7 @@ pub const Lua = struct {
                 };
                 // Calling
 
-                try self.L.protectedCall(.{
+                try self.lua.inner().protectedCall(.{
                     .args = fields_info.len,
                     .results = retValCount,
                     .msg_handler = 0,
@@ -330,7 +376,7 @@ pub const Lua = struct {
 
                 // Getting return value(s)
                 if (retValCount > 0) {
-                    return Lua.pop(RetType.?, self.L);
+                    return self.lua.pop(RetType.?);
                 }
             }
         };
@@ -339,63 +385,62 @@ pub const Lua = struct {
     pub const Table = struct {
         const Self = @This();
 
-        L: *ZLua,
+        lua: *Lua,
         ref: c_int = undefined,
 
         // This 'Init' assumes, that the top element of the stack is a Lua table
-        pub fn init(_L: *ZLua) Self {
-            const _ref = _L.ref(ziglua.registry_index) catch {
+        pub fn init(lua: *Lua) Self {
+            const _ref = lua.inner().ref(ziglua.registry_index) catch {
                 @panic("The top element of the stack should be a Lua table");
             };
             const res = Self{
-                .L = _L,
+                .lua = lua,
                 .ref = _ref,
             };
             return res;
         }
 
-        // Unregister this shit
         pub fn destroy(self: *const Self) void {
-            self.L.unref(ziglua.registry_index, self.ref);
+            self.lua.inner().unref(ziglua.registry_index, self.ref);
         }
 
         pub fn clone(self: *const Self) Self {
-            self.L.rawGetIndex(ziglua.registry_index, self.ref);
-            return Table.init(self.L, self.allocator);
+            self.lua.inner().rawGetIndex(ziglua.registry_index, self.ref);
+            return Self.init(self.L, self.allocator);
         }
 
         pub fn set(self: *const Self, key: anytype, value: anytype) void {
             // Getting table reference
-            _ = self.L.rawGetIndex(ziglua.registry_index, self.ref);
+            _ = self.lua.inner().rawGetIndex(ziglua.registry_index, self.ref);
             // Push key, value
-            Lua.push(self.L, key);
-            Lua.push(self.L, value);
+            self.lua.push(key);
+            self.lua.push(value);
             // Set
-            self.L.setTable(-3);
+            self.lua.inner().setTable(-3);
         }
 
         pub fn get(self: *const Self, comptime T: type, key: anytype) !T {
             // Getting table by reference
-            _ = self.L.rawGetIndex(ziglua.registry_index, self.ref);
+            _ = self.lua.inner().rawGetIndex(ziglua.registry_index, self.ref);
 
             // Push key
-            Lua.push(self.L, key);
+            self.lua.push(key);
             // Get
-            _ = self.L.getTable(-2);
+            _ = self.lua.inner().getTable(-2);
 
-            return try Lua.pop(T, self.L);
+            return try self.lua.pop(T);
         }
 
         pub fn getResource(self: *const Self, comptime T: type, key: anytype) !T {
             // Getting table reference
-            _ = self.L.rawGetIndex(ziglua.registry_index, self.ref);
+            _ = self.lua.inner().rawGetIndex(ziglua.registry_index, self.ref);
 
             // Push key
-            Lua.push(self.L, key);
+            self.lua.push(key);
             // Get
-            _ = self.L.getTable(-2);
+            _ = self.lua.inner().getTable(-2);
 
-            return try Lua.popResource(T, self.L);
+            return try self.lua.popResource(T);
         }
     };
 
@@ -403,28 +448,28 @@ pub const Lua = struct {
         return struct {
             const Self = @This();
 
-            L: *ZLua,
+            lua: *Lua,
             ref: c_int = undefined,
             ptr: *T = undefined,
 
-            pub fn init(_L: *ZLua) Self {
-                const _ref = _L.ref(ziglua.registry_index);
+            pub fn init(lua: *Lua) Self {
+                const _ref = lua.inner().ref(ziglua.registry_index);
 
                 const res = Self{
-                    .L = _L,
+                    .lua = lua,
                     .ref = _ref,
                 };
                 return res;
             }
 
             pub fn destroy(self: *const Self) void {
-                ZLua.unref(self.ref);
+                self.lua.inner().unref(ziglua.registry_index, self.ref);
             }
 
             pub fn clone(self: *const Self) Self {
-                self.L.rawGetIndex(ziglua.registry_index, self.ref);
+                self.lua.inner().rawGetIndex(ziglua.registry_index, self.ref);
 
-                var result = Self.init(self.L);
+                var result = Self.init(self.lua);
                 result.ptr = self.ptr;
                 return result;
             }
@@ -432,18 +477,19 @@ pub const Lua = struct {
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    fn pushSlice(comptime T: type, L: *ZLua, values: []const T) void {
-        L.createTable(@intCast(values.len), 0);
+    fn pushSlice(self: *Lua, comptime T: type, values: []const T) void {
+        const table = self.createTable() catch @panic("could not push slice");
 
         for (values, 0..) |value, i| {
-            push(L, i + 1);
-            push(L, value);
-
-            L.setTable(-3);
+            table.set(i + 1, value);
         }
+
+        table.destroy();
     }
 
-    fn push(L: *ZLua, value: anytype) void {
+    fn push(self: *Lua, value: anytype) void {
+        const L = self.inner();
+
         const T = @TypeOf(value);
         switch (@typeInfo(T)) {
             .void => L.pushNil(),
@@ -455,7 +501,7 @@ pub const Lua = struct {
                 //L.pushAny(value) catch {};
                 //pushSlice(info.child, L, );
 
-                pushSlice(info.child, L, &value);
+                self.pushSlice(info.child, &value);
             },
             .pointer => |PointerInfo| switch (PointerInfo.size) {
                 .Slice => {
@@ -469,6 +515,9 @@ pub const Lua = struct {
                 .One => {
                     switch (@typeInfo(PointerInfo.child)) {
                         .array => |childInfo| {
+                            //std.debug.print("{p}\n", .{L});
+                            //std.debug.print("{s}\n", .{value});
+
                             if (childInfo.child == u8) {
                                 _ = L.pushString(value);
                                 //_ = lualib.lua_pushstring(L, @ptrCast([*c]const u8, value));
@@ -477,24 +526,19 @@ pub const Lua = struct {
                             }
                         },
                         .@"struct" => {
-                            unreachable;
+                            //unreachable;
+
+                            L.pushLightUserdata(value);
                         },
-                        else => @compileError("Unexpected type"),
+                        else => @compileError("Unexpected type: '" ++ @typeName(T) ++ "'"),
                     }
                 },
                 .Many => {
                     if (PointerInfo.child == u8) {
-                        //_ = lualib.lua_pushstring(L, @ptrCast([*c]const u8, value));
-                        //_ = L.pushString(value);
-
-                        // const null_terminated = try L.allocator().dupeZ(u8, value);
-                        // defer L.allocator().free(null_terminated);
-
                         const casted: [*c]const u8 = value;
 
                         const len = std.mem.len(casted);
 
-                        //std.mem.
                         _ = L.pushString(value[0..len]);
                     } else {
                         @compileError("invalid type: '" ++ @typeName(T) ++ "'. Typeinfo: '" ++ @typeInfo(PointerInfo.child) ++ "'");
@@ -517,17 +561,26 @@ pub const Lua = struct {
             },
             .@"fn" => {
                 // Possibly combine these first two args.
-                try FunctionWrapper(@TypeOf(value), value, L);
+                try self.pushZigFunction(@TypeOf(value), value);
             },
             .@"struct" => |_| {
-                const funIdx = comptime indexOfNullable(T, "Function");
-                const tblIdx = comptime indexOfNullable(T, "Table");
-                const refIdx = comptime indexOfNullable(T, "Ref");
+                const funIdx = comptime stringContains(@typeName(T), "Function");
+                const tblIdx = comptime stringContains(@typeName(T), "Table");
+                const refIdx = comptime stringContains(@typeName(T), "Ref");
 
-                if (funIdx >= 0 or tblIdx >= 0 or refIdx >= 0) {
+                if (funIdx or tblIdx or refIdx) {
                     _ = L.rawGetIndex(ziglua.registry_index, value.ref);
                 } else {
-                    @compileError("Only Function and Lua.Tables are supported; not '" ++ @typeName(T) ++ "'.");
+                    //L.pushLightUserdata(value);
+
+                    var buf: [1024:0]u8 = undefined;
+                    _ = std.fmt.bufPrintZ(&buf, "{}", .{value}) catch unreachable;
+
+                    @panic(&buf);
+
+                    //_ = L.rawGetIndex(ziglua.registry_index, value.ref);
+                    //@compileError(&buf);
+                    //@compileError("Only Function and Lua.Tables are supported; not '" ++ @typeName(T) ++ "'.");
                 }
             },
             // .Type => {
@@ -536,22 +589,20 @@ pub const Lua = struct {
         }
     }
 
-    fn pop(comptime T: type, L: *ZLua) !T {
-        defer L.pop(1);
+    fn pop(self: *Lua, comptime T: type) !T {
+        defer self.inner().pop(1);
+
+        const L = self.inner();
 
         switch (@typeInfo(T)) {
             .bool => {
                 return L.toBoolean(-1);
             },
             .int, .comptime_int => {
-                //var isnum: i32 = 0;
-                const result: T = @as(T, @intCast(try L.toInteger(-1)));
-                return result;
+                return @as(T, @intCast(try L.toInteger(-1)));
             },
             .float, .comptime_float => {
-                //var isnum: i32 = 0;
-                const result: T = @as(T, @floatCast(try L.toNumber(-1)));
-                return result;
+                return @as(T, @floatCast(try L.toNumber(-1)));
             },
             // Only string, allocless get (Lua holds the pointer, it is only a slice pointing to it)
             .pointer => |PointerInfo| switch (PointerInfo.size) {
@@ -563,15 +614,22 @@ pub const Lua = struct {
                     } else @compileError("Only '[]const u8' (aka string) is supported allocless.");
                 },
                 .One => {
-                    @panic("TODO");
-                    // var optionalTbl = getUserData(L).registeredTypes.get(@typeName(PointerInfo.child));
-                    // if (optionalTbl) |tbl| {
-                    //     @panic("TODO");
-                    //     //var result: T = @as(T, @ptrCast(@alignCast(@alignOf(PointerInfo.child), lualib.luaL_checkudata(L, -1, @ptrCast([*c]const u8, tbl[0..])))));
-                    //     //return result;
-                    // } else {
-                    //     return error.invalidType;
-                    // }
+                    const optionalTable = self.getUserData().registeredTypes.get(@typeName(PointerInfo.child));
+
+                    //std.debug.print("{s}\n", .{@typeName(PointerInfo.child)});
+
+                    if (optionalTable) |table| {
+                        return L.checkUserdata(PointerInfo.child, -1, table);
+                    } else {
+                        return error.invalidType;
+                    }
+                    //return error.invalidType;
+
+                    // std.debug.print("{s}\n", .{@typeName(PointerInfo.child)});
+
+                    // std.debug.print("HERE7\n", .{});
+
+                    // return L.checkUserdata(PointerInfo.child, -1, @typeName(PointerInfo.child));
                 },
                 else => @compileError("invalid type: '" ++ @typeName(T) ++ "'"),
             },
@@ -579,8 +637,8 @@ pub const Lua = struct {
                 if (StructInfo.is_tuple) {
                     @compileError("Tuples are not supported.");
                 }
-                const funIdx = comptime indexOfNullable(T, "Function");
-                const tblIdx = comptime indexOfNullable(T, "Table");
+                const funIdx = comptime stringContains(@typeName(T), "Function");
+                const tblIdx = comptime stringContains(@typeName(T), "Table");
                 if (funIdx >= 0 or tblIdx >= 0) {
                     @compileError("Only allocGet supports Lua.Function and Lua.Table. The type '" ++ @typeName(T) ++ "' is not supported.");
                 }
@@ -596,28 +654,22 @@ pub const Lua = struct {
         }
     }
 
-    fn indexOfNullable(comptime T: type, needle: []const u8) i32 {
-        if (std.mem.indexOf(u8, @typeName(T), needle)) |value| {
-            return @intCast(value);
-        } else {
-            return -1;
-        }
-    }
+    fn popResource(self: *Lua, comptime T: type) !T {
+        const L = self.inner();
 
-    fn popResource(comptime T: type, L: *ZLua) !T {
         switch (@typeInfo(T)) {
             std.builtin.Type.pointer => |PointerInfo| switch (PointerInfo.size) {
                 .Slice => {
                     defer L.pop(1);
                     if (L.typeOf(-1) == ziglua.LuaType.table) {
-                        L.len(-1);
-                        const len = try pop(u64, L);
+                        const len = self.inner().objectLen(-1);
+
                         var res = try L.allocator().alloc(PointerInfo.child, @intCast(len));
                         var i: u32 = 0;
                         while (i < len) : (i += 1) {
-                            push(L, i + 1);
+                            self.push(i + 1);
                             _ = L.getTable(-2);
-                            res[i] = try Lua.pop(PointerInfo.child, L);
+                            res[i] = try self.pop(PointerInfo.child);
                         }
                         return res;
                     } else {
@@ -627,25 +679,25 @@ pub const Lua = struct {
                 else => @compileError("Only Slice is supported. Type: " ++ @typeName(T)),
             },
             std.builtin.Type.@"struct" => |_| {
-                const funIdx = comptime indexOfNullable(T, "Function");
-                const tblIdx = comptime indexOfNullable(T, "Table");
-                const refIdx = comptime indexOfNullable(T, "Ref");
+                const funIdx = comptime stringContains(@typeName(T), "Function");
+                const tblIdx = comptime stringContains(@typeName(T), "Table");
+                const refIdx = comptime stringContains(@typeName(T), "Ref");
 
-                if (funIdx >= 0) {
+                if (funIdx) {
                     if (L.typeOf(-1) == ziglua.LuaType.function) {
-                        return T.init(L);
+                        return T.init(self);
                     } else {
                         defer L.pop(1);
                         return error.bad_type;
                     }
-                } else if (tblIdx >= 0) {
+                } else if (tblIdx) {
                     if (L.typeOf(-1) == ziglua.LuaType.table) {
-                        return T.init(L);
+                        return T.init(self);
                     } else {
                         defer L.pop(1);
                         return error.bad_type;
                     }
-                } else if (refIdx >= 0) {
+                } else if (refIdx) {
                     if (L.typeOf(-1) == ziglua.LuaType.userdata) {
                         return T.init(L);
                     } else {
@@ -655,6 +707,14 @@ pub const Lua = struct {
                 } else @compileError("Only Functions are supported; not '" ++ @typeName(T) ++ "'");
             },
             else => @compileError("invalid type: '" ++ @typeName(T) ++ "'"),
+        }
+    }
+
+    fn stringContains(haystack: []const u8, needle: []const u8) bool {
+        if (std.mem.indexOf(u8, haystack, needle)) |_| {
+            return true;
+        } else {
+            return false;
         }
     }
 
@@ -678,11 +738,11 @@ pub const Lua = struct {
                 else => return false,
             },
             .@"struct" => |_| {
-                const funIdx = comptime indexOfNullable(T, "Function");
-                const tblIdx = comptime indexOfNullable(T, "Table");
-                const refIdx = comptime indexOfNullable(T, "Ref");
+                const funIdx = comptime stringContains(@typeName(T), "Function");
+                const tblIdx = comptime stringContains(@typeName(T), "Table");
+                const refIdx = comptime stringContains(@typeName(T), "Ref");
 
-                if (funIdx >= 0 or tblIdx >= 0 or refIdx >= 0) {
+                if (funIdx or tblIdx or refIdx) {
                     if (deallocate) {
                         value.?.destroy();
                     }
@@ -695,10 +755,10 @@ pub const Lua = struct {
         }
     }
 
-    fn FunctionWrapper(comptime funcType: type, func: *const funcType, L: *ZLua) !void {
+    fn pushZigFunction(self: *Lua, comptime funcType: type, func: *const funcType) !void {
         const info = @typeInfo(funcType);
         if (info != .@"fn") {
-            @compileError("FunctionWrapper expects a function type");
+            @compileError("pushZigFunction expects a function type");
         }
 
         const ReturnType = info.@"fn".return_type.?;
@@ -707,24 +767,31 @@ pub const Lua = struct {
 
         const funcPtrAsInt = @as(c_longlong, @intCast(@intFromPtr(func)));
 
+        const L = self.inner();
+
         L.pushInteger(funcPtrAsInt);
 
         const cfun = struct {
-            fn helper(_L: *ZLua) !i32 {
+            fn helper(fn_zlua: *ZLua) !i32 {
+
                 //std.debug.print("{s}\n", .{"before"});
+
+                const fn_lua: *Lua = @ptrCast(fn_zlua);
+
+                const _L = fn_lua.inner();
 
                 var args: ArgTypes = undefined;
 
-                if (_L.getTop() <= args.len) {
-                    _L.raiseErrorStr("Not enough arguments supplied to function. Expected %d but received %d.", .{ args.len, _L.getTop() });
-                }
+                // if (_L.getTop() <= args.len) {
+                //     _L.raiseErrorStr("Not enough arguments supplied to function. Expected %d but received %d.", .{ args.len, _L.getTop() });
+                // }
 
                 // Maybe allocate arguments.
                 inline for (0.., args) |i, arg| {
                     if (comptime allocateDeallocateHelper(@TypeOf(arg), false, null, null)) {
-                        args[i] = try popResource(@TypeOf(arg), _L);
+                        args[i] = try fn_lua.popResource(@TypeOf(arg));
                     } else {
-                        args[i] = try pop(@TypeOf(arg), _L);
+                        args[i] = try fn_lua.pop(@TypeOf(arg));
                     }
                 }
                 // Get func pointer upvalue as int => convert to func ptr then call
@@ -733,8 +800,9 @@ pub const Lua = struct {
                 const result = @call(.auto, @as(*const funcType, @ptrFromInt(ptr)), args);
 
                 if (resultCnt > 0) {
-                    push(_L, result);
+                    fn_lua.push(result);
                 }
+
                 // Deallocate any allocated arguments.
                 inline for (0.., args) |i, _| {
                     _ = allocateDeallocateHelper(@TypeOf(args[i]), true, _L.allocator(), args[i]);
@@ -748,127 +816,15 @@ pub const Lua = struct {
         L.pushClosure(ziglua.wrap(cfun), 1);
     }
 
-    // fn ZigCallHelper(comptime funcType: type) type {
-    //     const info = @typeInfo(funcType);
-    //     if (info != .@"fn") {
-    //         @compileError("ZigCallHelper expects a function type");
-    //     }
-
-    //     @compileLog(funcType);
-
-    //     const ReturnType = info.@"fn".return_type.?;
-    //     const ArgTypes = std.meta.ArgsTuple(funcType);
-    //     const resultCnt = if (ReturnType == void) 0 else 1;
-
-    //     return struct {
-    //         pub const LowLevelHelpers = struct {
-    //             const Self = @This();
-
-    //             compargs: ArgTypes = undefined,
-    //             result: ReturnType = undefined,
-
-    //             pub fn init() Self {
-    //                 return Self{};
-    //             }
-
-    //             fn prepareArgs(self: *Self, L: ?*ZLua) !void {
-
-    //                 @compileLog("args");
-    //                 inline for (self.args) |x| {
-    //                     @compileLog(x);
-    //                 }
-
-    //                 // Prepare arguments
-    //                 if (self.args.len <= 0) return;
-    //                 var i: i32 = (self.args.len - 1);
-    //                 inline while (i > -1) : (i -= 1) {
-    //                     if (allocateDeallocateHelper(@TypeOf(self.args[i]), false, null, null)) {
-    //                         self.args[i] = popResource(@TypeOf(self.args[i]), L.?) catch unreachable;
-    //                     } else {
-    //                         self.args[i] = pop(@TypeOf(self.args[i]), L.?) catch unreachable;
-    //                     }
-    //                 }
-    //             }
-
-    //             fn call(self: *Self, func: *const funcType) !void {
-    //                 self.result = @call(.auto, func, self.args);
-    //             }
-
-    //             fn pushResult(self: *Self, L: ?*ZLua) !void {
-    //                 if (resultCnt > 0) {
-    //                     push(L.?, self.result);
-    //                 }
-    //             }
-
-    //             fn destroyArgs(self: *Self, L: ?*ZLua) !void {
-    //                 if (self.args.len <= 0) return;
-    //                 var i: i32 = self.args.len - 1;
-    //                 inline while (i > -1) : (i -= 1) {
-    //                     _ = allocateDeallocateHelper(@TypeOf(self.args[i]), true, L.allocator(), self.args[i]);
-    //                 }
-    //                 _ = allocateDeallocateHelper(ReturnType, true, L.allocator(), self.result);
-    //             }
-    //         };
-
-    //         pub fn pushFunctor(L: ?*ZLua, func: *const funcType) !void {
-    //             const funcPtrAsInt = @as(c_longlong, @intCast(@intFromPtr(func)));
-
-    //             L.?.pushInteger(funcPtrAsInt);
-
-    //             const cfun = struct {
-    //                 fn helper(_L: *ZLua) callconv(.C) c_int {
-
-    //                     var f: LowLevelHelpers = undefined;
-    //                     // Prepare arguments from stack
-    //                     f.prepareArgs(_L) catch unreachable;
-    //                     // Get func pointer upvalue as int => convert to func ptr then call
-
-    //                     const ptr = _L.toInteger(ZLua.upvalueIndex(1)) catch unreachable;
-
-    //                     f.call(@as(*const funcType, @ptrFromInt(ptr))) catch unreachable;
-    //                     // The end
-    //                     f.pushResult(_L) catch unreachable;
-    //                     // Release arguments
-    //                     f.destroyArgs(_L) catch unreachable;
-    //                     return resultCnt;
-    //                 }
-    //             }.helper;
-
-    //             L.?.pushClosure(ziglua.wrap(cfun), 1);
-    //         }
-    //     };
-    // }
-
-    fn getUserData(L: *Lua) *Lua.LuaUserData {
-        // var ud: *anyopaque = undefined;
-
-        // L.?.getAlloc(Lua.LuaUserData, "test");
-
-        // _ = lualib.lua_getallocf(L, @ptrCast([*c]?*anyopaque, &ud));
-        // const userData = @ptrCast(*Lua.LuaUserData, @alignCast(@alignOf(Lua.LuaUserData), ud));
-        // return userData;
-
-        return L.ud;
+    fn getUserData(self: *Lua) *Lua.LuaUserData {
+        return self.getRegistry(LuaUserData, "LuaUserData") catch {
+            @panic("Library user data was not set!");
+        };
     }
 
-    fn getAllocator(L: *ZLua) std.mem.Allocator {
-        return L.allocator();
+    fn getAllocator(self: *Lua) std.mem.Allocator {
+        return self.getUserData().allocator();
     }
-
-    //     // Credit: https://github.com/daurnimator/zig-autolua
-    //     fn alloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) callconv(.C) ?*anyopaque {
-    //         const c_alignment = 16;
-    //         const userData = @ptrCast(*Lua.LuaUserData, @alignCast(@alignOf(Lua.LuaUserData), ud));
-    //         if (@ptrCast(?[*]align(c_alignment) u8, @alignCast(c_alignment, ptr))) |previous_pointer| {
-    //             const previous_slice = previous_pointer[0..osize];
-    //             return (userData.allocator.realloc(previous_slice, nsize) catch return null).ptr;
-    //         } else {
-    //             // osize is any of LUA_TSTRING, LUA_TTABLE, LUA_TFUNCTION, LUA_TUSERDATA, or LUA_TTHREAD
-    //             // when (and only when) Lua is creating a new object of that type.
-    //             // When osize is some other value, Lua is allocating memory for something else.
-    //             return (userData.allocator.alignedAlloc(u8, c_alignment, nsize) catch return null).ptr;
-    //         }
-    //     }
 };
 
 const TestCustomType = struct {
@@ -920,14 +876,17 @@ const TestCustomType = struct {
 };
 
 pub fn main() anyerror!void {
-    var lua = try Lua.init(std.heap.c_allocator);
-    defer lua.destroy();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var lua = try Lua.init(gpa.allocator());
+    defer lua.deinit();
     lua.openLibs();
 
-    try lua.newUserType(TestCustomType, "TestCustomType");
+    lua.newUserType(TestCustomType, "TestCustomType") catch {
+        std.debug.print("{s}\n", .{lua.inner().toString(-1) catch "Unknown"});
+    };
 
     const tbl = try lua.createTable();
-    defer lua.release(tbl);
+    defer tbl.destroy();
 
     tbl.set("welcome", "All your codebase are belong to us.");
     lua.set("zig", tbl);
@@ -942,11 +901,15 @@ pub fn main() anyerror!void {
 
     lua.set("func", func);
 
-    // lua.run("print(func())") catch {
-    //     std.debug.print("{s}\n", .{lua.L.toString(-1) catch "Unknown"});
-    // };
+    lua.run("print(func(1))") catch {
+        std.debug.print("{s}\n", .{lua.inner().toString(-1) catch "Unknown"});
+    };
 
-    lua.run("print(TestCustomType.new())") catch {
-        std.debug.print("{s}\n", .{lua.L.toString(-1) catch "Unknown"});
+    //const function = try lua.get(Lua.Function(fn (x: i32) i32), "func");
+    //function.call(.{42});
+
+    // _a: i32, _b: f32, _c: []const u8, _d: bool
+    lua.run("print(TestCustomType.new(1, 2, \"test\", false))") catch {
+        std.debug.print("{s}\n", .{lua.inner().toString(-1) catch "Unknown"});
     };
 }
